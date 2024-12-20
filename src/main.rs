@@ -1,14 +1,18 @@
 use chrono::NaiveDate;
 use clap::Parser;
 use eyre::eyre;
-use log::{debug, error, info};
+use log::{error, info};
 use rinja::Template;
 use serde::Deserialize;
+use signal_hook::consts::signal::SIGHUP;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 use url::Url;
+
 // TODO: parse ignorelist files in the style if .gitignore
+
 const STYLES: &str = include_str!("styles.css");
 
 #[derive(Parser, Debug)]
@@ -37,24 +41,12 @@ struct State {
     index: Vec<IndexEntry>,
 }
 
-fn main() -> eyre::Result<()> {
-    env_logger::Builder::from_default_env()
-        .filter(None, log::LevelFilter::Debug)
-        .init();
-
-    let args = Args::parse();
-    let content_path = args.content_path.unwrap_or_else(|| {
-        std::env::current_dir().expect("failed to get current directory")
-    });
-    let content_path = std::fs::canonicalize(content_path)?;
-
-    let server = Server::http(args.bind).map_err(|e| eyre!("{e}"))?;
-    info!("Spawned server on address: {}", server.server_addr());
-
-    let state = {
+impl State {
+    fn load(content_path: &Path) -> eyre::Result<State> {
         let mut index = vec![];
-        let mut sections = vec!["".to_string()]; // Blank is the root index
-        for entry in std::fs::read_dir(&content_path)? {
+        let mut sections = vec![String::new()]; // Blank is the root index
+        //
+        for entry in std::fs::read_dir(content_path)? {
             let entry = entry?;
             let path = entry.path();
             if path
@@ -65,7 +57,7 @@ fn main() -> eyre::Result<()> {
                 continue;
             }
             let Some(path) = path
-                .strip_prefix(&content_path)
+                .strip_prefix(content_path)
                 .expect("is a subdir of content path")
                 .to_str()
                 .map(str::to_string)
@@ -76,7 +68,7 @@ fn main() -> eyre::Result<()> {
             sections.push(path);
         }
 
-        walk(&content_path, &mut |is_dir, path| {
+        walk(content_path, &mut |is_dir, path| {
             if path
                 .file_name()
                 .is_some_and(|x| x.as_encoded_bytes().starts_with(b"."))
@@ -90,9 +82,11 @@ fn main() -> eyre::Result<()> {
             {
                 debug_assert!(path.is_absolute());
                 let contents = std::fs::read_to_string(path)?;
-                if let (_, Some(meta)) = markdown_to_document(&sections, &contents) {
+                if let (_, Some(meta)) =
+                    markdown_to_document(&sections, &contents)
+                {
                     let path = path
-                        .strip_prefix(&content_path)
+                        .strip_prefix(content_path)
                         .expect("is a subdir of content path");
                     index.push(IndexEntry {
                         meta,
@@ -102,23 +96,57 @@ fn main() -> eyre::Result<()> {
             }
             Ok(true)
         })?;
-        Arc::new(RwLock::new(State { sections, index }))
-    };
-    let server = Arc::new(server);
-    let content_path: Arc<Path> = content_path.as_path().into();
-    let mut guards = Vec::with_capacity(args.serve_threads);
+        Ok(State { sections, index })
+    }
+}
+
+fn main() -> eyre::Result<()> {
+    let args = Args::parse();
+    env_logger::Builder::from_default_env()
+        .filter(None, log::LevelFilter::Info)
+        .init();
+
+    let reload_state = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGHUP, reload_state.clone())?;
+
+    let content_path: Arc<Path> =
+        std::fs::canonicalize(args.content_path.unwrap_or_else(|| {
+            std::env::current_dir().expect("current directory")
+        }))?
+        .as_path()
+        .into();
+    let state = Arc::new(RwLock::new(State::load(&content_path)?));
+    let server = Arc::new(Server::http(args.bind).map_err(|e| eyre!("{e}"))?);
+    info!("Spawned server on address: http://{}", server.server_addr());
+
+    let mut servers = Vec::with_capacity(args.serve_threads);
     for _ in 0..args.serve_threads {
         let server = server.clone();
         let content_path = content_path.clone();
         let state = state.clone();
-        let guard = std::thread::spawn(move || serve(server, state, content_path));
-        guards.push(guard);
+
+        let server =
+            std::thread::spawn(move || serve(server, state, content_path));
+        servers.push(server);
     }
 
-    for guard in guards {
-        guard.join().map_err(|e| eyre!("{e:?}"))??;
+    loop {
+        if reload_state.swap(false, Ordering::Relaxed) {
+            info!("Reloading state...");
+            let mut state = state.write().unwrap();
+            match State::load(&content_path) {
+                Ok(s) => {
+                    info!("State reloaded sucessfully!");
+                    *state = s;
+                }
+                Err(e) => error!(
+                    "Failed to reload state (retaining previous state): {e}"
+                ),
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(256));
     }
-    Ok(())
 }
 
 fn walk(
@@ -145,7 +173,6 @@ fn walk(
     Ok(())
 }
 
-
 #[derive(Template)]
 #[template(ext = "html", path = "header.html")]
 struct HeaderTemplate<'a> {
@@ -160,7 +187,11 @@ struct IndexTemplate<'a> {
     docs: &'a [(&'a Meta, &'a str)],
 }
 impl IndexTemplate<'_> {
-    fn index(sections: &[String], docs: &[IndexEntry], section: Option<&str>) -> String {
+    fn index(
+        sections: &[String],
+        docs: &[IndexEntry],
+        section: Option<&str>,
+    ) -> String {
         let docs: Vec<(&Meta, &str)> = if let Some(section) = section {
             docs.iter()
                 .filter(|x| x.path.starts_with(section))
@@ -171,9 +202,11 @@ impl IndexTemplate<'_> {
                 .map(|IndexEntry { meta, path }| (meta, path.as_str()))
                 .collect()
         };
-        let sections = sections.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let sections = sections.iter().map(String::as_str).collect::<Vec<_>>();
         let template = IndexTemplate {
-            header: HeaderTemplate { sects: sections.as_slice() },
+            header: HeaderTemplate {
+                sects: sections.as_slice(),
+            },
             styles: STYLES,
             docs: docs.as_slice(),
         };
@@ -187,7 +220,8 @@ fn serve(
     state: Arc<RwLock<State>>,
     content_dir: Arc<Path>,
 ) -> eyre::Result<()> {
-    let html_header = Header::from_bytes(b"Content-Type", b"text/html").unwrap();
+    let html_header =
+        Header::from_bytes(b"Content-Type", b"text/html").unwrap();
     loop {
         let rq = server.recv().unwrap();
         let headers = rq.headers();
@@ -200,8 +234,8 @@ fn serve(
             respond(rq, Response::new_empty(StatusCode(400)));
             continue;
         };
-        // Tiny URL gives me a fake URL, so I have to first construct a URL, then
-        // deconstruct it.
+        // Tiny URL gives me a fake URL, so I have to first construct a URL,
+        // then deconstruct it.
         let url = format!("http://{}{}", host.value, rq.url());
         let url = match Url::parse(&url) {
             Ok(url) => url,
@@ -216,7 +250,8 @@ fn serve(
                 respond(
                     rq,
                     Response::new_empty(StatusCode(308)).with_header(
-                        Header::from_bytes(b"location", b"/index.html").unwrap(),
+                        Header::from_bytes(b"location", b"/index.html")
+                            .unwrap(),
                     ),
                 );
                 continue;
@@ -242,19 +277,20 @@ fn serve(
                     Response::from_string(IndexTemplate::index(
                         state.sections.as_slice(),
                         state.index.as_slice(),
-                        Some(dbg!(section)),
+                        Some(section),
                     ))
                     .with_header(html_header.clone()),
                 );
                 continue;
-                
             }
             _ => {}
         }
 
         let path = match std::path::absolute(content_dir.join(&path[1..])) {
             Err(e) => {
-                error!("Failed to make request path (\"{path}\") absolute: {e}");
+                error!(
+                    "Failed to make request path (\"{path}\") absolute: {e}"
+                );
                 respond(rq, Response::new_empty(StatusCode(400)));
                 continue;
             }
@@ -280,13 +316,15 @@ fn serve(
             }
         };
         match path.extension().and_then(|x| x.to_str()) {
-            Some("md") | Some("markdown") => {
+            Some("md" | "markdown") => {
                 let contents = String::from_utf8(contents).unwrap();
                 let state = state.read().unwrap();
-                let (contents, _) = markdown_to_document(&state.sections, &contents);
+                let (contents, _) =
+                    markdown_to_document(&state.sections, &contents);
                 if respond(
                     rq,
-                    Response::from_string(contents).with_header(html_header.clone()),
+                    Response::from_string(contents)
+                        .with_header(html_header.clone()),
                 ) {
                     continue;
                 }
@@ -321,14 +359,17 @@ impl Default for Meta {
     fn default() -> Self {
         Self {
             title: "UNTITLED!".to_string(),
-            date: NaiveDate::from_ymd_opt(2024, 01, 01).unwrap(),
+            date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             lang: None,
             desc: None,
         }
     }
 }
 
-fn markdown_to_document(header_sections: &[String], contents: &str) -> (String, Option<Meta>) {
+fn markdown_to_document(
+    header_sections: &[String],
+    contents: &str,
+) -> (String, Option<Meta>) {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
     use std::sync::LazyLock;
     use syntect::highlighting::{Theme, ThemeSet};
@@ -340,77 +381,83 @@ fn markdown_to_document(header_sections: &[String], contents: &str) -> (String, 
         theme_set.themes["base16-ocean.dark"].clone()
     });
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_GFM);
-
     #[derive(Default)]
-    enum State {
+    enum ParseState {
         #[default]
         Normal,
         Meta,
         Highlight,
     }
-    let mut state = State::default();
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+
+    let mut state = ParseState::default();
     let mut code = String::new();
     let mut meta = None;
     let mut syntax = SYNTAX_SET.find_syntax_plain_text();
-    let parser = Parser::new_ext(&contents, options).filter_map(|event| match event {
-        Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
-            let lang = lang.trim();
-            if lang == "meta" {
-                state = State::Meta;
-                None
-            } else {
-                state = State::Highlight;
-                syntax = SYNTAX_SET
-                    .find_syntax_by_token(&lang)
-                    .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-                None
-            }
-        }
-        Event::Text(text) => match state {
-            State::Normal => Some(Event::Text(text)),
-            State::Meta => {
-                match toml::de::from_str::<Meta>(&text) {
-                    Ok(m) => meta = Some(m),
-                    Err(e) => {
-                        error!("Failed to parse invalid metadata: {e}")
-                    }
+    let parser =
+        Parser::new_ext(contents, options).filter_map(|event| match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
+                let lang = lang.trim();
+                if lang == "meta" {
+                    state = ParseState::Meta;
+                    None
+                } else {
+                    state = ParseState::Highlight;
+                    syntax = SYNTAX_SET
+                        .find_syntax_by_token(lang)
+                        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+                    None
                 }
-                None
             }
-            State::Highlight => {
-                code.push_str(&text);
-                None
-            }
-        },
-        Event::End(TagEnd::CodeBlock) => match state {
-            State::Normal => Some(Event::End(TagEnd::CodeBlock)),
-            State::Meta => {
-                state = State::Normal;
-                None
-            }
-            State::Highlight => {
-                let html = syntect::html::highlighted_html_for_string(
-                    &code,
-                    &SYNTAX_SET,
-                    syntax,
-                    &THEME,
-                )
-                .unwrap_or(code.clone());
-                code.clear();
-                state = State::Normal;
-                Some(Event::Html(html.into()))
-            }
-        },
-        _ => Some(event),
-    });
+            Event::Text(text) => match state {
+                ParseState::Normal => Some(Event::Text(text)),
+                ParseState::Meta => {
+                    match toml::de::from_str::<Meta>(&text) {
+                        Ok(m) => meta = Some(m),
+                        Err(e) => error!("Failed to parse metadata: {e}"),
+                    }
+                    None
+                }
+                ParseState::Highlight => {
+                    code.push_str(&text);
+                    None
+                }
+            },
+            Event::End(TagEnd::CodeBlock) => match state {
+                ParseState::Normal => Some(Event::End(TagEnd::CodeBlock)),
+                ParseState::Meta => {
+                    state = ParseState::Normal;
+                    None
+                }
+                ParseState::Highlight => {
+                    let html = syntect::html::highlighted_html_for_string(
+                        &code,
+                        &SYNTAX_SET,
+                        syntax,
+                        &THEME,
+                    )
+                    .unwrap_or(code.clone());
+                    code.clear();
+                    state = ParseState::Normal;
+                    Some(Event::Html(html.into()))
+                }
+            },
+            _ => Some(event),
+        });
 
     let mut html_output = String::new();
     pulldown_cmark::html::push_html(&mut html_output, parser);
-    let sections = header_sections.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+
+    let sections = header_sections
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let template = DocumentTemplate {
-        header: HeaderTemplate { sects: sections.as_slice() },
+        header: HeaderTemplate {
+            sects: sections.as_slice(),
+        },
         styles: STYLES,
         meta: meta.clone().unwrap_or_default(),
         markdown: &html_output,

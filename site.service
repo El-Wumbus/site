@@ -4,6 +4,7 @@ Description=My website server
 [Service]
 Type=simple
 ExecStart=site --bind 0.0.0.0:8569
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 
 [Install]
