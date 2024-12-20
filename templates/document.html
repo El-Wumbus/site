@@ -18,8 +18,9 @@
     {{ styles }}
     </style>
 </head>
+{{ header }}
 <body>
-    <h1>{{ meta.title|e("html") }} <sup class="title">{{ meta.date }}</sup></h1>
+    <h1><sup class="title">{{ meta.date }}</sup>{{ meta.title|e("html") }}</h1>
     <hr />
     
 

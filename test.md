@@ -1,6 +1,7 @@
 ```meta
-title = "Testing<> Frontmatter"
-desc = "This is a description <html>"
+title = "Testing"
+date = "2024-12-20"
+desc = "This is a description"
 ```
 
 # Lorem Ipsum

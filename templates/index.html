@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>{{ styles }}</style></head>
+
+{{ header }}
+
+<body>
+<ol id="index">
+{% for doc in docs %}
+    <li>
+        <sup class="title">{{ doc.0.date }}</sup>
+        <a class="index-item" href="/{{doc.1}}">{{doc.0.title}}</a>
+    </li>
+{% endfor %}
+</ol>
+</body>
+</html>

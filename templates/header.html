@@ -1,0 +1,11 @@
+<header>
+    <div>
+    {% for section in sects %}
+        {% if section.is_empty() %}
+            <a href="/index.html">All</a>
+        {% else %}
+            <a href="/{{ section }}/index.html">{{ section }}</a>
+        {% endif%}
+    {% endfor %}
+    </div>
+</header>

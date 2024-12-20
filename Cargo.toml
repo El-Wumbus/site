@@ -21,3 +21,4 @@ serde = { version = "1.0.216", features = ["derive"] }
 syntect = "5.2.0"
 tiny_http = "0.12.0"
 toml = "0.8.19"
+url = "2.5.4"

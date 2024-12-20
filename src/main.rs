@@ -7,7 +7,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tiny_http::{Header, Request, Response, Server, StatusCode};
-
+use url::Url;
+// TODO: parse ignorelist files in the style if .gitignore
 const STYLES: &str = include_str!("styles.css");
 
 #[derive(Parser, Debug)]
@@ -24,7 +25,17 @@ struct Args {
     serve_threads: usize,
 }
 
-type DocIndex = Vec<(Meta, String)>;
+#[derive(Debug)]
+struct IndexEntry {
+    meta: Meta,
+    path: String,
+}
+
+#[derive(Debug)]
+struct State {
+    sections: Vec<String>,
+    index: Vec<IndexEntry>,
+}
 
 fn main() -> eyre::Result<()> {
     env_logger::Builder::from_default_env()
@@ -40,8 +51,31 @@ fn main() -> eyre::Result<()> {
     let server = Server::http(args.bind).map_err(|e| eyre!("{e}"))?;
     info!("Spawned server on address: {}", server.server_addr());
 
-    let mut document_index = {
-        let mut document_index: DocIndex = vec![];
+    let state = {
+        let mut index = vec![];
+        let mut sections = vec!["".to_string()]; // Blank is the root index
+        for entry in std::fs::read_dir(&content_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path
+                .file_name()
+                .is_some_and(|x| x.as_encoded_bytes().starts_with(b"."))
+                || !entry.file_type()?.is_dir()
+            {
+                continue;
+            }
+            let Some(path) = path
+                .strip_prefix(&content_path)
+                .expect("is a subdir of content path")
+                .to_str()
+                .map(str::to_string)
+            else {
+                error!("path is not UTF-8: \"{}\"", path.display());
+                continue;
+            };
+            sections.push(path);
+        }
+
         walk(&content_path, &mut |is_dir, path| {
             if path
                 .file_name()
@@ -56,16 +90,19 @@ fn main() -> eyre::Result<()> {
             {
                 debug_assert!(path.is_absolute());
                 let contents = std::fs::read_to_string(path)?;
-                if let (_, Some(meta)) = markdown_to_document(&contents) {
+                if let (_, Some(meta)) = markdown_to_document(&sections, &contents) {
                     let path = path
                         .strip_prefix(&content_path)
                         .expect("is a subdir of content path");
-                    document_index.push((meta, path.to_str().unwrap().to_string()));
+                    index.push(IndexEntry {
+                        meta,
+                        path: path.to_str().unwrap().to_string(),
+                    });
                 }
             }
             Ok(true)
         })?;
-        Arc::new(RwLock::new(document_index))
+        Arc::new(RwLock::new(State { sections, index }))
     };
     let server = Arc::new(server);
     let content_path: Arc<Path> = content_path.as_path().into();
@@ -73,9 +110,8 @@ fn main() -> eyre::Result<()> {
     for _ in 0..args.serve_threads {
         let server = server.clone();
         let content_path = content_path.clone();
-        let document_index = document_index.clone();
-        let guard =
-            std::thread::spawn(move || serve(server, document_index, content_path));
+        let state = state.clone();
+        let guard = std::thread::spawn(move || serve(server, state, content_path));
         guards.push(guard);
     }
 
@@ -109,35 +145,37 @@ fn walk(
     Ok(())
 }
 
-/// ```rinja
-/// <!doctype html>
-/// <html>
-/// <head>
-/// <meta charset="utf-8">
-/// <style>{{ styles }}</style></head>
-/// <body>
-/// <ol>
-/// {% for doc in docs %}
-///     <li><a href="/{{doc.1}}"> {{ doc.0.date }} —  {{doc.0.title}} </a></li>
-/// {% endfor %}
-/// </ol>
-/// </body>
-/// </html>
-/// ```
+
 #[derive(Template)]
-#[template(ext = "html", escape = "none", in_doc = true)]
+#[template(ext = "html", path = "header.html")]
+struct HeaderTemplate<'a> {
+    sects: &'a [&'a str],
+}
+
+#[derive(Template)]
+#[template(ext = "html", escape = "none", path = "index.html")]
 struct IndexTemplate<'a> {
+    header: HeaderTemplate<'a>,
     styles: &'static str,
     docs: &'a [(&'a Meta, &'a str)],
 }
 impl IndexTemplate<'_> {
-    fn index(docs: Arc<RwLock<DocIndex>>) -> String {
-        let docs = docs.read().unwrap();
-        let ds: Vec<(&Meta, &str)> =
-            docs.iter().map(|(meta, s)| (meta, s.as_str())).collect();
+    fn index(sections: &[String], docs: &[IndexEntry], section: Option<&str>) -> String {
+        let docs: Vec<(&Meta, &str)> = if let Some(section) = section {
+            docs.iter()
+                .filter(|x| x.path.starts_with(section))
+                .map(|IndexEntry { meta, path }| (meta, path.as_str()))
+                .collect()
+        } else {
+            docs.iter()
+                .map(|IndexEntry { meta, path }| (meta, path.as_str()))
+                .collect()
+        };
+        let sections = sections.iter().map(|s| s.as_str()).collect::<Vec<_>>();
         let template = IndexTemplate {
+            header: HeaderTemplate { sects: sections.as_slice() },
             styles: STYLES,
-            docs: ds.as_slice(),
+            docs: docs.as_slice(),
         };
 
         template.render().unwrap()
@@ -146,26 +184,77 @@ impl IndexTemplate<'_> {
 
 fn serve(
     server: Arc<Server>,
-    index: Arc<RwLock<DocIndex>>,
+    state: Arc<RwLock<State>>,
     content_dir: Arc<Path>,
 ) -> eyre::Result<()> {
     let html_header = Header::from_bytes(b"Content-Type", b"text/html").unwrap();
     loop {
         let rq = server.recv().unwrap();
-        let url = &rq.url()[1..];
-
-        if url == "index" || url == "index.html" {
-            respond(
-                rq,
-                Response::from_string(IndexTemplate::index(index.clone()))
-                    .with_header(html_header.clone()),
-            );
+        let headers = rq.headers();
+        // Why is tiny_http using this `AsciiStr` haufen scheiße?
+        let Some(host) = headers
+            .iter()
+            .find(|x| x.field.as_str().as_str().eq_ignore_ascii_case("Host"))
+        else {
+            // The host header is required: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Host
+            respond(rq, Response::new_empty(StatusCode(400)));
             continue;
+        };
+        // Tiny URL gives me a fake URL, so I have to first construct a URL, then
+        // deconstruct it.
+        let url = format!("http://{}{}", host.value, rq.url());
+        let url = match Url::parse(&url) {
+            Ok(url) => url,
+            Err(e) => {
+                error!("Invalid URL \"{url}\": {e}");
+                continue;
+            }
+        };
+        let path = url.path();
+        match path {
+            "/" | "/index" => {
+                respond(
+                    rq,
+                    Response::new_empty(StatusCode(308)).with_header(
+                        Header::from_bytes(b"location", b"/index.html").unwrap(),
+                    ),
+                );
+                continue;
+            }
+            "/index.html" => {
+                let state = state.read().unwrap();
+                respond(
+                    rq,
+                    Response::from_string(IndexTemplate::index(
+                        state.sections.as_slice(),
+                        state.index.as_slice(),
+                        None,
+                    ))
+                    .with_header(html_header.clone()),
+                );
+                continue;
+            }
+            _ if path.ends_with("/index.html") => {
+                let section = &path.strip_suffix("/index.html").unwrap()[1..];
+                let state = state.read().unwrap();
+                respond(
+                    rq,
+                    Response::from_string(IndexTemplate::index(
+                        state.sections.as_slice(),
+                        state.index.as_slice(),
+                        Some(dbg!(section)),
+                    ))
+                    .with_header(html_header.clone()),
+                );
+                continue;
+                
+            }
+            _ => {}
         }
 
-        let path = match std::path::absolute(content_dir.join(url)) {
+        let path = match std::path::absolute(content_dir.join(&path[1..])) {
             Err(e) => {
-                error!("Failed to make request url (\"{url}\") absolute: {e}");
+                error!("Failed to make request path (\"{path}\") absolute: {e}");
                 respond(rq, Response::new_empty(StatusCode(400)));
                 continue;
             }
@@ -193,7 +282,8 @@ fn serve(
         match path.extension().and_then(|x| x.to_str()) {
             Some("md") | Some("markdown") => {
                 let contents = String::from_utf8(contents).unwrap();
-                let (contents, _) = markdown_to_document(&contents);
+                let state = state.read().unwrap();
+                let (contents, _) = markdown_to_document(&state.sections, &contents);
                 if respond(
                     rq,
                     Response::from_string(contents).with_header(html_header.clone()),
@@ -213,6 +303,7 @@ fn serve(
 #[derive(Template)]
 #[template(ext = "html", escape = "none", path = "document.html")]
 struct DocumentTemplate<'a> {
+    header: HeaderTemplate<'a>,
     styles: &'static str,
     meta: Meta,
     markdown: &'a str,
@@ -237,7 +328,7 @@ impl Default for Meta {
     }
 }
 
-fn markdown_to_document(contents: &str) -> (String, Option<Meta>) {
+fn markdown_to_document(header_sections: &[String], contents: &str) -> (String, Option<Meta>) {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
     use std::sync::LazyLock;
     use syntect::highlighting::{Theme, ThemeSet};
@@ -317,7 +408,9 @@ fn markdown_to_document(contents: &str) -> (String, Option<Meta>) {
 
     let mut html_output = String::new();
     pulldown_cmark::html::push_html(&mut html_output, parser);
+    let sections = header_sections.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let template = DocumentTemplate {
+        header: HeaderTemplate { sects: sections.as_slice() },
         styles: STYLES,
         meta: meta.clone().unwrap_or_default(),
         markdown: &html_output,
