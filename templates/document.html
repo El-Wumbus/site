@@ -1,0 +1,69 @@
+{% match meta.lang %}
+    {% when Some with (lang) %} <html lang="{{ lang }}">
+    {% when None %} <html lang="en-US">
+{% endmatch %}
+<head>
+    <meta charset="utf-8" />
+    {% match meta.title %}
+        {% when Some with (title) %}
+            <title>{{ title|e("html") }}</title>
+            <meta property="og:title" content="{{ title|e("html") }}" />
+        {% when None %}
+    {% endmatch %}
+
+    {% match meta.desc %}
+        {% when Some with (desc) %}
+            <meta name="description" content="{{ desc|e("html") }}" />
+            <meta property="og:description" content="{{ desc|e("html") }}" />
+        {% when None %}
+    {% endmatch %}
+
+    <style>
+    :root {
+        /** Dark theme primary colors */
+        --color-primary-a0: #f6f5f4;
+        --color-primary-a10: #f7f6f5;
+        --color-primary-a20: #f8f7f6;
+        --color-primary-a30: #f9f8f8;
+        --color-primary-a40: #faf9f9;
+        --color-primary-a50: #fbfbfa;
+
+        /** Dark theme surface colors */
+        --color-surface-a0: #121212;
+        --color-surface-a10: #282828;
+        --color-surface-a20: #3f3f3f;
+        --color-surface-a30: #575757;
+        --color-surface-a40: #717171;
+        --color-surface-a50: #8b8b8b;
+
+        /** Dark theme mixed surface colors */
+        --color-surface-mixed-a0: #252525;
+        --color-surface-mixed-a10: #393939;
+        --color-surface-mixed-a20: #4f4f4f;
+        --color-surface-mixed-a30: #666666;
+        --color-surface-mixed-a40: #7d7d7d;
+        --color-surface-mixed-a50: #969696;
+        --content-width: 45em;
+        
+        background: #181818;
+        color: #f1f1f1;
+        font-size: 18;
+        font-family: Iosevka, sans-serif, monospace;
+
+    }
+    
+    body {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: calc(50% - var(--content-width) / 2);
+        right: calc(50% - var(--content-width) / 2);
+        /*background: #181818;
+        color: #f1f1f1;*/
+    }
+</style>
+</head>
+<body>
+    {{ markdown }}
+</body>
+</html>
