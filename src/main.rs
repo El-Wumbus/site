@@ -96,6 +96,9 @@ impl State {
             }
             Ok(true)
         })?;
+
+        index.sort_by(|r, l| l.meta.date.cmp(&r.meta.date));
+        sections.sort();
         Ok(State { sections, index })
     }
 }
