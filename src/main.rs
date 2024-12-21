@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use clap::Parser;
 use eyre::eyre;
-use log::{error, info};
+use log::{debug, error, info};
 use rinja::Template;
 use serde::Deserialize;
 use signal_hook::consts::signal::SIGHUP;
@@ -22,91 +22,16 @@ struct Args {
     /// omitted).
     content_path: Option<PathBuf>,
     /// Which socket address and port to use
-    #[arg(long, default_value = "127.0.0.1:0")]
+    #[arg(long, default_value = "127.0.0.2:6969")]
     bind: std::net::SocketAddr,
-    /// How much to parallelize serving web pages
     #[arg(short = 't', long, default_value_t = 4)]
     serve_threads: usize,
-}
-
-#[derive(Debug)]
-struct IndexEntry {
-    meta: Meta,
-    path: String,
-}
-
-#[derive(Debug)]
-struct State {
-    sections: Vec<String>,
-    index: Vec<IndexEntry>,
-}
-
-impl State {
-    fn load(content_path: &Path) -> eyre::Result<State> {
-        let mut index = vec![];
-        let mut sections = vec![String::new()]; // Blank is the root index
-        //
-        for entry in std::fs::read_dir(content_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .file_name()
-                .is_some_and(|x| x.as_encoded_bytes().starts_with(b"."))
-                || !entry.file_type()?.is_dir()
-            {
-                continue;
-            }
-            let Some(path) = path
-                .strip_prefix(content_path)
-                .expect("is a subdir of content path")
-                .to_str()
-                .map(str::to_string)
-            else {
-                error!("path is not UTF-8: \"{}\"", path.display());
-                continue;
-            };
-            sections.push(path);
-        }
-
-        walk(content_path, &mut |is_dir, path| {
-            if path
-                .file_name()
-                .is_some_and(|x| x.as_encoded_bytes().starts_with(b"."))
-            {
-                return Ok(false);
-            }
-            if !is_dir
-                && path
-                    .extension()
-                    .is_some_and(|x| x == "md" || x == "markdown")
-            {
-                debug_assert!(path.is_absolute());
-                let contents = std::fs::read_to_string(path)?;
-                if let (_, Some(meta)) =
-                    markdown_to_document(&sections, &contents)
-                {
-                    let path = path
-                        .strip_prefix(content_path)
-                        .expect("is a subdir of content path");
-                    index.push(IndexEntry {
-                        meta,
-                        path: path.to_str().unwrap().to_string(),
-                    });
-                }
-            }
-            Ok(true)
-        })?;
-
-        index.sort_by(|r, l| l.meta.date.cmp(&r.meta.date));
-        sections.sort();
-        Ok(State { sections, index })
-    }
 }
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
     env_logger::Builder::from_default_env()
-        .filter(None, log::LevelFilter::Info)
+        .filter(None, log::LevelFilter::Debug)
         .init();
 
     let reload_state = Arc::new(AtomicBool::new(false));
@@ -118,6 +43,7 @@ fn main() -> eyre::Result<()> {
         }))?
         .as_path()
         .into();
+
     let state = Arc::new(RwLock::new(State::load(&content_path)?));
     let server = Arc::new(Server::http(args.bind).map_err(|e| eyre!("{e}"))?);
     info!("Spawned server on address: http://{}", server.server_addr());
@@ -149,6 +75,107 @@ fn main() -> eyre::Result<()> {
         }
 
         std::thread::sleep(std::time::Duration::from_millis(256));
+    }
+}
+
+#[derive(Debug)]
+struct IndexEntry {
+    meta: Meta,
+    path: String,
+}
+
+#[derive(Debug)]
+struct State {
+    sections: Vec<String>,
+    index: Vec<IndexEntry>,
+}
+
+impl State {
+    fn load(content_path: &Path) -> eyre::Result<State> {
+        let found_git = find_program("git").is_some();
+
+        let mut index = vec![];
+        let mut sections = vec![];
+        for entry in std::fs::read_dir(content_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path
+                .file_name()
+                .map(|x| x.as_encoded_bytes())
+                .is_some_and(|x| x.starts_with(b"."))
+                || !entry.file_type()?.is_dir()
+            {
+                continue;
+            }
+
+            let Some(path) = path
+                .strip_prefix(content_path)
+                .expect("is a subdir of content path")
+                .to_str()
+                .map(str::to_string)
+            else {
+                error!("path is not UTF-8: \"{}\"", path.display());
+                continue;
+            };
+            sections.push(path);
+        }
+
+        walk(content_path, &mut |is_dir, path| {
+            if path
+                .file_name()
+                .map(|x| x.as_encoded_bytes())
+                .is_some_and(|x| x.starts_with(b"."))
+            {
+                return Ok(false);
+            }
+            if !is_dir
+                && path
+                    .extension()
+                    .is_some_and(|x| x == "md" || x == "markdown")
+            {
+                debug_assert!(path.is_absolute());
+                let contents = std::fs::read_to_string(path)?;
+                if let (_, Some(meta)) =
+                    markdown_to_document(&sections, &contents)
+                {
+                    let path = path
+                        .strip_prefix(content_path)
+                        .expect("is a subdir of content path");
+                    index.push(IndexEntry {
+                        meta,
+                        path: path.to_str().unwrap().to_string(),
+                    });
+                }
+            }
+            Ok(true)
+        })?;
+
+        if found_git {
+            let ignored_sections =
+                filter_ignored(content_path, sections.as_slice())?;
+            debug!("Filtering out ignored sections: {:?}", ignored_sections);
+            sections.retain(|s| {
+                !ignored_sections.iter().any(|x| *x == Path::new(s))
+            });
+
+            let ignored_docs = filter_ignored(
+                content_path,
+                &index.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+            )?;
+            debug!(
+                "Filtering ignored documents from index: {:?}",
+                ignored_docs
+            );
+            index.retain(|i| {
+                !ignored_docs.iter().any(|x| *x == Path::new(&i.path))
+            });
+        }
+
+        sections.push(String::new()); // Blank is the root index
+        sections.sort();
+        index.sort_by(|r, l| l.meta.date.cmp(&r.meta.date));
+        Ok(State { sections, index })
     }
 }
 
@@ -247,9 +274,10 @@ fn serve(
                 continue;
             }
         };
+
         let path = url.path();
         match path {
-            "/" | "/index" => {
+            "/" => {
                 respond(
                     rq,
                     Response::new_empty(StatusCode(308)).with_header(
@@ -260,12 +288,12 @@ fn serve(
                 continue;
             }
             "/index.html" => {
-                let state = state.read().unwrap();
+                let state_l = state.read().unwrap();
                 respond(
                     rq,
                     Response::from_string(IndexTemplate::index(
-                        state.sections.as_slice(),
-                        state.index.as_slice(),
+                        state_l.sections.as_slice(),
+                        state_l.index.as_slice(),
                         None,
                     ))
                     .with_header(html_header.clone()),
@@ -274,12 +302,12 @@ fn serve(
             }
             _ if path.ends_with("/index.html") => {
                 let section = &path.strip_suffix("/index.html").unwrap()[1..];
-                let state = state.read().unwrap();
+                let state_l = state.read().unwrap();
                 respond(
                     rq,
                     Response::from_string(IndexTemplate::index(
-                        state.sections.as_slice(),
-                        state.index.as_slice(),
+                        state_l.sections.as_slice(),
+                        state_l.index.as_slice(),
                         Some(section),
                     ))
                     .with_header(html_header.clone()),
@@ -289,12 +317,19 @@ fn serve(
             _ => {}
         }
 
-        let path = match std::path::absolute(content_dir.join(&path[1..])) {
-            Err(e) => {
-                error!(
-                    "Failed to make request path (\"{path}\") absolute: {e}"
-                );
-                respond(rq, Response::new_empty(StatusCode(400)));
+        let path = &path[1..];
+        let state_l = state.read().unwrap();
+
+        // Ensure we don't serve anything that hasn't been indexed, this way
+        // ignore files are honored.
+        if !state_l.index.iter().any(|x| x.path == path) {
+            respond(rq, Response::new_empty(StatusCode(404)));
+            continue;
+        }
+
+        let path = match std::path::absolute(content_dir.join(path)) {
+            Err(_) => {
+                respond(rq, Response::new_empty(StatusCode(404)));
                 continue;
             }
             Ok(p) => p,
@@ -476,4 +511,45 @@ fn respond<R: std::io::Read>(request: Request, response: Response<R>) -> bool {
         return true;
     }
     false
+}
+
+fn find_program(path: impl AsRef<Path>) -> Option<PathBuf> {
+    let sps = std::env::var_os("PATH")?;
+    for p in std::env::split_paths(&sps) {
+        let path = p.join(&path);
+        if path.is_file() {
+            // I just assume that the file in the path is executable because I
+            // don't want to check for that here.
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn filter_ignored(
+    in_dir: &Path,
+    paths: &[impl AsRef<Path>],
+) -> eyre::Result<Vec<PathBuf>> {
+    let paths = paths.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
+    let output = std::process::Command::new("git")
+        .current_dir(in_dir)
+        .args(["check-ignore", "--"])
+        .args(paths.as_slice())
+        .output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| String::from("[None]"));
+        let stderr = String::from_utf8(output.stderr)?;
+        return Err(eyre!(
+            "'Git check-ignore' exited uncuccessfully with status code {code} and output:\nstdout:{stdout}\nstderr:\n{stderr}"
+        ));
+    }
+    Ok(stdout
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .collect())
 }
