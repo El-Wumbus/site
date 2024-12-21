@@ -31,7 +31,7 @@ struct Args {
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
     env_logger::Builder::from_default_env()
-        .filter(None, log::LevelFilter::Debug)
+        .filter(None, log::LevelFilter::Trace)
         .init();
 
     let reload_state = Arc::new(AtomicBool::new(false));
@@ -152,24 +152,16 @@ impl State {
         })?;
 
         if found_git {
-            let ignored_sections =
-                filter_ignored(content_path, sections.as_slice())?;
-            debug!("Filtering out ignored sections: {:?}", ignored_sections);
-            sections.retain(|s| {
-                !ignored_sections.iter().any(|x| *x == Path::new(s))
-            });
+            let ignored = filter_ignored(content_path, sections.as_slice())?;
+            debug!("Removing ignored sections: {ignored:?}");
+            sections.retain(|s| !ignored.iter().any(|x| *x == Path::new(s)));
 
-            let ignored_docs = filter_ignored(
+            let ignored = filter_ignored(
                 content_path,
                 &index.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
             )?;
-            debug!(
-                "Filtering ignored documents from index: {:?}",
-                ignored_docs
-            );
-            index.retain(|i| {
-                !ignored_docs.iter().any(|x| *x == Path::new(&i.path))
-            });
+            debug!("Removing ignored documents from the index: {ignored:?}");
+            index.retain(|i| !ignored.iter().any(|x| *x == Path::new(&i.path)));
         }
 
         sections.push(String::new()); // Blank is the root index
@@ -531,21 +523,23 @@ fn filter_ignored(
     paths: &[impl AsRef<Path>],
 ) -> eyre::Result<Vec<PathBuf>> {
     let paths = paths.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
-    let output = std::process::Command::new("git")
+    let mut git = std::process::Command::new("git");
+    let git = git
         .current_dir(in_dir)
         .args(["check-ignore", "--"])
-        .args(paths.as_slice())
-        .output()?;
+        .args(paths.as_slice());
+    log::trace!("Running \"git\" with args: {:?}", git.get_args());
+
+    let output = git.output()?;
     let stdout = String::from_utf8(output.stdout)?;
-    if !output.status.success() {
-        let code = output
-            .status
-            .code()
-            .map(|x| x.to_string())
-            .unwrap_or_else(|| String::from("[None]"));
+    let code = output
+        .status
+        .code()
+        .ok_or_else(|| eyre!("git didn't exit with a code"))?;
+    if code == 128 {
         let stderr = String::from_utf8(output.stderr)?;
         return Err(eyre!(
-            "'Git check-ignore' exited uncuccessfully with status code {code} and output:\nstdout:{stdout}\nstderr:\n{stderr}"
+            "'Git check-ignore' exited uncuccessfully with output:\nstdout:{stdout}\nstderr:\n{stderr}"
         ));
     }
     Ok(stdout
