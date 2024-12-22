@@ -1,6 +1,7 @@
 :root {
     --purple1: #dc8add;
     --purple2: #c061cb;
+    --blue2: #62a0ea;
     --blue3: #3584e4;
     --blue4: #1c71d8;
 
@@ -24,7 +25,7 @@ header {
 
 header a {
     float: left;
-    color: var(--foreground-color);
+    color: var(--foreground-color) !important;
     text-align: center;
     margin-left: 0.2em;
     margin-right: 0.2em;
@@ -38,6 +39,7 @@ header a {
 }
 
 header a:hover {
+    color: var(--foreground-color) !important;
     background-color: var(--blue4);
     transition: background-color 80ms;
 }
@@ -56,14 +58,15 @@ body {
     font-family: var(--font-family);
 }
 
-a.index-item {
-    color: var(--foreground-color);
+a {
+    color: var(--blue2);
+    text-decoration: underline;
 }
 
-a.index-item:visited {
-    color: var(--purple1);
+a:visited {
+    color: var(--blue2);
+    text-decoration: underline;
 }
-
 ol#index {
   list-style-type: none;
 }

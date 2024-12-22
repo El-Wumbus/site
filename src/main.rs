@@ -48,15 +48,12 @@ fn main() -> eyre::Result<()> {
     let server = Arc::new(Server::http(args.bind).map_err(|e| eyre!("{e}"))?);
     info!("Spawned server on address: http://{}", server.server_addr());
 
-    let mut servers = Vec::with_capacity(args.serve_threads);
     for _ in 0..args.serve_threads {
         let server = server.clone();
         let content_path = content_path.clone();
         let state = state.clone();
 
-        let server =
-            std::thread::spawn(move || serve(server, state, content_path));
-        servers.push(server);
+        std::thread::spawn(move || serve(server, state, content_path));
     }
 
     loop {
