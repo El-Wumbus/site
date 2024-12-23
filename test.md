@@ -1,10 +1,10 @@
 ```meta
-title = "Testing"
+title = "This is a test article"
 date = "2024-12-20"
 desc = "This is a description"
 ```
 
-# Lorem Ipsum
+## Lorem Ipsum
 
 "*Neque porro quisquam est qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit...*"  
 "There is no one who loves pain itself, who seeks after it and wants to have it, simply because it is pain..."
@@ -15,7 +15,7 @@ desc = "This is a description"
 - Nam convallis dui et augue iaculis tempus.
 - Aenean tincidunt lorem vel ante blandit finibus id at mauris.
 
-# Test Markdown
+## Test Markdown
 
 Test Test Test
 
