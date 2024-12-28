@@ -1,0 +1,182 @@
+@import url("/.styles/fonts.css");
+
+:root {
+/* Colors -- U.S. Web Design System:
+ * https://robert-96.github.io/gimp-color-palettes/#uswds
+ * https://designsystem.digital.gov/utilities/color/
+ * 
+ **/
+
+    --Base-Lightest: rgb(240, 240, 240);
+    --Base-Lighter: rgb(223, 225, 226);
+    --Base-Light: rgb(169, 174, 177);
+    --Base: rgb(113, 118, 122);
+    --Base-Dark: rgb(86, 92, 101);
+    --Base-Darker: rgb(61, 69, 81);
+    --Base-Darkest: rgb(27, 27, 27);
+    --Ink: rgb(27, 27, 27);
+    --Primary-Lighter: rgb(217, 232, 246);
+    --Primary-Light: rgb(115, 179, 231);
+    --Primary: rgb(0, 94, 162);
+    --Primary-Vivid: rgb(0, 80, 216);
+    --Primary-Dark: rgb(26, 68, 128);
+    --Primary-Darker: rgb(22, 46, 81);
+    --Secondary-Lighter: rgb(248, 223, 226);
+    --Secondary-Light: rgb(242, 147, 140);
+    --Secondary: rgb(216, 57, 51);
+    --Secondary-Vivid: rgb(228, 29, 61);
+    --Secondary-Dark: rgb(181, 9, 9);
+    --Secondary-Darker: rgb(139, 10, 3);
+    --Accent-Cool-Lighter: rgb(225, 243, 248);
+    --Accent-Cool-Light: rgb(151, 212, 234);
+    --Accent-Cool: rgb(0, 189, 227);
+    --Accent-Cool-Dark: rgb(40, 160, 203);
+    --Accent-Cool-Darker: rgb(7, 100, 141);
+    --Accent-Warm-Light: rgb(242, 228, 212);
+    --Accent-Warm-Lighter: rgb(255, 188, 120);
+    --Accent-Warm: rgb(250, 148, 65);
+    --Accent-Warm-Dark: rgb(192, 86, 0);
+    --Accent-Warm-Darker: rgb(119, 85, 64);
+    --Emergency: rgb(156, 61, 16);
+    --Emergency-Dark: rgb(51, 45, 41);
+    --White: rgb(255, 255, 255);
+    --Gray-5: rgb(240, 240, 240);
+    --Gray-10: rgb(230, 230, 230);
+    --Gray-30: rgb(173, 173, 173);
+    --Gray-50: rgb(117, 117, 117);
+    --Gray-70: rgb(69, 69, 69);
+    --Gray-90: rgb(23, 23, 23);
+    --Black: rgb(0, 0, 0);
+    --Red: rgb(229, 34, 7);
+    --Orange: rgb(230, 111, 14);
+    --Gold: rgb(255, 190, 46);
+    --Yellow: rgb(254, 230, 133);
+    --Green: rgb(83, 130, 0);
+    --Mint: rgb(4, 197, 133);
+    --Cyan: rgb(0, 158, 193);
+    --Blue: rgb(0, 118, 214);
+    --Indigo: rgb(103, 108, 200);
+    --Violet: rgb(129, 104, 179);
+    --Magenta: rgb(215, 45, 121);
+
+    --background-color: var(--Gray-90); /*#181818;*/
+    --foreground-color: var(--Base-Lightest);
+
+    --font-family: 'Noto Sans', 'Source Sans Pro', sans-serif;
+    --font-size: 20px;
+    --code-font-family: 'Iosevka', 'Roboto Mono', monospace;
+    --cooe-font-size: 20px;
+    --header-font-family: 'Merriweather', 'Noto Serif', serif;
+    --ui-font-family: 'Source Sans Pro', 'Noto Sans', sans-serif;
+    --content-width: 80ex;
+
+    width: 100%;
+    font-size: var(--font-size);
+    font-family: var(--font-family);
+}
+
+body {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: max(calc(50% - var(--content-width) / 2), 0%);
+    right: max(calc(50% - var(--content-width) / 2), 0%);
+    /*background: #181818;
+    color: #f1f1f1;*/
+    
+    background: var(--background-color);
+    color: var(--foreground-color);
+    font-family: var(--font-family);
+}
+
+math {
+    display: block;
+    font-size: calc(var(--font-size) * 1.25);
+}
+
+blockquote {
+  background: var(--background-color);
+  border-left: 10px solid var(--Blue-2);
+  margin: 1.5em 10px;
+  padding: 0.5em 10px;
+}
+blockquote p {
+  display: inline;
+}
+pre {
+    padding: 0.5em;
+    overflow-x: scroll;
+    font-size: var(--code-font-size);
+}
+code {
+    padding: 0.2em;
+}
+
+pre, code {
+    font-family: var(--code-font-family);
+    font-size: var(--code-font-size);
+    border-radius: 0.1em;
+}
+
+
+header {
+    float: right;
+    overflow: hidden;
+    padding 0.4em;
+    font-family: var(--ui-font-family);
+    background-color: var(--Gray-70);
+    border-radius: 0.15em;
+}
+
+h1,h2,h3,h4,h5,h6 {
+    font-family: var(--header-font-family);
+}
+
+a {
+    color: var(--Blue-2);
+    text-decoration: underline;
+}
+
+a:visited {
+    color: var(--Blue-2);
+    text-decoration: underline;
+}
+header a {
+    float: left;
+    color: var(--foreground-color) !important;
+    text-align: center;
+    padding: 0.4rem 0.6rem;
+    text-decoration: none;
+
+    text-transform: capitalize;
+}
+
+header a:hover {
+    color: var(--foreground-color) !important;
+    background-color: var(--Violet);
+    transition: background-color 50ms;
+}
+ol#index {
+    list-style-type: none;
+    font-family: var(--ui-font-family);
+}
+
+sup.title {
+    color: var(--Base-Light);
+    font-size: 0.6em;
+    padding-right: 0.3em;
+    font-family: var(--ui-font-family);
+}
+
+.section-label {
+    font-family: var(--ui-font-family);
+    background-color: var(--Violet);
+    text-align: center;
+    text-decoration: none;
+    margin-left: 0.4em;
+    padding: 0.2rem 0.4rem;
+    text-transform: capitalize;
+    border-radius: 0.15em;
+}
+
+

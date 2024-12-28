@@ -5,15 +5,16 @@ edition = "2024"
 
 [profile.release]
 debug = false
-codegen-units = 1
+#codegen-units = 1
 strip = true
-lto = "fat"
+#lto = "fat"
 
 [dependencies]
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["derive"] }
 env_logger = "0.11.5"
 eyre = "0.6.12"
+include_dir = "0.7.4"
 lazy_static = "1.5.0"
 log = "0.4.22"
 pulldown-cmark = "0.12.2"

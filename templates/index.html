@@ -11,8 +11,11 @@
 <ol id="index">
 {% for doc in docs %}
     <li>
-        <sup class="title">{{ doc.0.date }}</sup>
-        <a class="index-item" href="/{{doc.1}}">{{doc.0.title}}</a>
+        <sup class="title">{{ doc.meta.date }}</sup>
+        <a class="index-item" href="/{{doc.path}}">{{doc.meta.title}}</a>
+        {% if !doc.section.is_empty() %}
+        <a class="section-label" href="/{{ doc.section }}/index.html"> {{doc.section}}</a>
+        {% endif %}
     </li>
 {% endfor %}
 </ol>

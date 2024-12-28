@@ -1,6 +1,9 @@
+#![feature(str_split_remainder)]
+
 use chrono::NaiveDate;
 use clap::Parser;
 use eyre::eyre;
+use include_dir::include_dir;
 use log::{debug, error, info};
 use rinja::Template;
 use serde::Deserialize;
@@ -11,9 +14,12 @@ use std::sync::{Arc, RwLock};
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 use url::Url;
 
-// TODO: parse ignorelist files in the style if .gitignore
+static ASSETS: include_dir::Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/static-assets");
 
-const STYLES: &str = include_str!("styles.css");
+static STYLES: include_dir::Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/styles");
+// const STYLES: &str = include_str!("../styles/styles.css");
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -78,6 +84,7 @@ fn main() -> eyre::Result<()> {
 #[derive(Debug)]
 struct IndexEntry {
     meta: Meta,
+    section: String,
     path: String,
 }
 
@@ -93,72 +100,99 @@ impl State {
 
         let mut index = vec![];
         let mut sections = vec![];
-        for entry in std::fs::read_dir(content_path)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path
-                .file_name()
-                .map(|x| x.as_encoded_bytes())
-                .is_some_and(|x| x.starts_with(b"."))
-                || !entry.file_type()?.is_dir()
-            {
-                continue;
-            }
-
-            let Some(path) = path
-                .strip_prefix(content_path)
-                .expect("is a subdir of content path")
-                .to_str()
-                .map(str::to_string)
-            else {
-                error!("path is not UTF-8: \"{}\"", path.display());
-                continue;
-            };
-            sections.push(path);
-        }
 
         walk(content_path, &mut |is_dir, path| {
-            if path
-                .file_name()
-                .map(|x| x.as_encoded_bytes())
-                .is_some_and(|x| x.starts_with(b"."))
-            {
-                return Ok(false);
-            }
-            if !is_dir
-                && path
-                    .extension()
-                    .is_some_and(|x| x == "md" || x == "markdown")
-            {
-                debug_assert!(path.is_absolute());
-                let contents = std::fs::read_to_string(path)?;
-                if let (_, Some(meta)) =
-                    markdown_to_document(&sections, &contents)
-                {
+            if let Some(file_name) = path.file_name() {
+                if file_name == ".section.toml" && !is_dir {
+                    // TODO: REWORK sections.
+                    /*let section_cfg = std::fs::read_to_string(path)?;
+                    let section_cfg = match toml::de::from_str::<Section>(&section_cfg) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to parse section configuration at path \"{}\": {}");
+                            Section::default()
+                        }
+                    };*/
                     let path = path
-                        .strip_prefix(content_path)
-                        .expect("is a subdir of content path");
-                    index.push(IndexEntry {
-                        meta,
-                        path: path.to_str().unwrap().to_string(),
-                    });
+                            .strip_prefix(content_path)
+                            .expect("is a subdir of content path");
+                    if let Some(section_name) = path
+                        .components()
+                        .next()
+                        .map(|x| x.as_os_str())
+                        .map(|x| x.to_str().unwrap().to_string())
+                    {
+                        sections.push(section_name);
+                    }
+                }
+
+                if file_name.as_encoded_bytes().starts_with(b".") {
+                    return Ok(false);
                 }
             }
+
+            if is_dir {
+                return Ok(true);
+            }
+
+            match path.extension().and_then(|x| x.to_str()) {
+                Some("md" | "markdown") => {
+                    debug_assert!(path.is_absolute());
+                    let contents = std::fs::read_to_string(path)?;
+                    if let (_, Some(meta)) =
+                        markdown_to_document(&sections, &contents)
+                    {
+                        let path = path
+                            .strip_prefix(content_path)
+                            .expect("is a subdir of content path");
+                        let section = path
+                            .components()
+                            .next()
+                            .map(|x| x.as_os_str())
+                            .map(|x| x.to_str().unwrap().to_string())
+                            .unwrap_or_default();
+                        let path = path.to_str().unwrap().to_string();
+                        let section = if section == path {
+                            String::new()
+                        } else {
+                            section
+                        };
+
+                        index.push(IndexEntry {
+                            meta,
+                            section,
+                            path,
+                        });
+                    }
+                }
+                _ => {}
+            }
+            
             Ok(true)
         })?;
 
+        sections.retain(|s| index.iter().any(|i| i.section == *s));
         if found_git {
-            let ignored = filter_ignored(content_path, sections.as_slice())?;
-            debug!("Removing ignored sections: {ignored:?}");
-            sections.retain(|s| !ignored.iter().any(|x| *x == Path::new(s)));
+            if !sections.is_empty() {
+                let ignored =
+                    filter_ignored(content_path, sections.as_slice())?;
+                debug!("Removing ignored sections: {ignored:?}");
+                sections
+                    .retain(|s| !ignored.iter().any(|x| *x == Path::new(s)));
+            }
 
-            let ignored = filter_ignored(
-                content_path,
-                &index.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
-            )?;
-            debug!("Removing ignored documents from the index: {ignored:?}");
-            index.retain(|i| !ignored.iter().any(|x| *x == Path::new(&i.path)));
+            if !index.is_empty() {
+                let ignored = filter_ignored(
+                    content_path,
+                    &index.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+                )?;
+                debug!(
+                    "Removing ignored documents from the index: {ignored:?}"
+                );
+                index.retain(|i| {
+                    !ignored.iter().any(|x| *x == Path::new(&i.path))
+                });
+            }
         }
 
         sections.push(String::new()); // Blank is the root index
@@ -203,30 +237,47 @@ struct HeaderTemplate<'a> {
 struct IndexTemplate<'a> {
     header: HeaderTemplate<'a>,
     styles: &'static str,
-    docs: &'a [(&'a Meta, &'a str)],
+    docs: &'a [IndexTemplateEntryData<'a>],
 }
+struct IndexTemplateEntryData<'a> {
+    meta: &'a Meta,
+    section: &'a str,
+    path: &'a str,
+}
+
+impl<'a> From<&'a IndexEntry> for IndexTemplateEntryData<'a> {
+    fn from(ie: &'a IndexEntry) -> Self {
+        Self {
+            meta: &ie.meta,
+            section: ie.section.as_str(),
+            path: ie.path.as_str(),
+        }
+    }
+}
+
 impl IndexTemplate<'_> {
     fn index(
         sections: &[String],
         docs: &[IndexEntry],
         section: Option<&str>,
     ) -> String {
-        let docs: Vec<(&Meta, &str)> = if let Some(section) = section {
+        let docs: Vec<IndexTemplateEntryData> = if let Some(section) = section {
             docs.iter()
                 .filter(|x| x.path.starts_with(section))
-                .map(|IndexEntry { meta, path }| (meta, path.as_str()))
+                .map(|x| x.into())
                 .collect()
         } else {
-            docs.iter()
-                .map(|IndexEntry { meta, path }| (meta, path.as_str()))
-                .collect()
+            docs.iter().map(|x| x.into()).collect()
         };
         let sections = sections.iter().map(String::as_str).collect::<Vec<_>>();
         let template = IndexTemplate {
             header: HeaderTemplate {
                 sects: sections.as_slice(),
             },
-            styles: STYLES,
+            styles: STYLES
+                .get_file("styles.css")
+                .and_then(include_dir::File::contents_utf8)
+                .unwrap(),
             docs: docs.as_slice(),
         };
 
@@ -301,6 +352,35 @@ fn serve(
                     ))
                     .with_header(html_header.clone()),
                 );
+                continue;
+            }
+            _ if path.starts_with("/.static-assets") => {
+                let mut segments = url.path_segments().unwrap();
+                let _ = segments.next(); // I can't use Skip::remainder if I use iter::skip ????
+                let Some(remainder) = segments.remainder() else {
+                    respond(rq, Response::new_empty(StatusCode(404)));
+                    continue;
+                };
+                if let Some(a) = ASSETS.get_file(remainder) {
+                    respond(rq, Response::from_data(a.contents()));
+                } else {
+                    respond(rq, Response::new_empty(StatusCode(404)));
+                };
+                continue;
+            }
+
+            _ if path.starts_with("/.styles") => {
+                let mut segments = url.path_segments().unwrap();
+                let _ = segments.next(); // I can't use Skip::remainder if I use iter::skip ????
+                let Some(remainder) = segments.remainder() else {
+                    respond(rq, Response::new_empty(StatusCode(404)));
+                    continue;
+                };
+                if let Some(a) = STYLES.get_file(remainder) {
+                    respond(rq, Response::from_data(a.contents()));
+                } else {
+                    respond(rq, Response::new_empty(StatusCode(404)));
+                };
                 continue;
             }
             _ => {}
@@ -485,7 +565,10 @@ fn markdown_to_document(
         header: HeaderTemplate {
             sects: sections.as_slice(),
         },
-        styles: STYLES,
+        styles: STYLES
+            .get_file("styles.css")
+            .and_then(include_dir::File::contents_utf8)
+            .unwrap(),
         meta: meta.clone().unwrap_or_default(),
         markdown: &html_output,
     };
